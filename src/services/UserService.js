@@ -7,31 +7,23 @@ class UserService {
       const { id: telegramId, username, first_name, last_name, language_code } = telegramUser;
 
       // Check if user already exists
-      const existingUser = dbManager.prepare(`
+      const existingUser = await dbManager.get(`
         SELECT id FROM users WHERE telegram_id = ?
-      `).get(telegramId);
+      `, [telegramId]);
 
       if (existingUser) {
         // Update last activity
-        this.updateLastActivity(existingUser.id);
+        await this.updateLastActivity(existingUser.id);
         return existingUser.id;
       }
 
       // Create new user
-      const insertUser = dbManager.prepare(`
+      const result = await dbManager.run(`
         INSERT INTO users (telegram_id, username, first_name, last_name, language_code)
         VALUES (?, ?, ?, ?, ?)
-      `);
+      `, [telegramId, username || null, first_name || null, last_name || null, language_code || 'ru']);
 
-      const result = insertUser.run(
-        telegramId,
-        username || null,
-        first_name || null,
-        last_name || null,
-        language_code || 'ru'
-      );
-
-      const userId = result.lastInsertRowid;
+      const userId = result.lastID;
 
       // Initialize user stats
       await this.initializeUserStats(userId);
@@ -55,11 +47,6 @@ class UserService {
 
   async initializeUserStats(userId) {
     try {
-      const insertStats = dbManager.prepare(`
-        INSERT INTO user_stats (user_id, skill_areas, achievements)
-        VALUES (?, ?, ?)
-      `);
-
       const defaultSkillAreas = {
         active_listening: 0,
         empathy: 0,
@@ -71,25 +58,24 @@ class UserService {
 
       const defaultAchievements = [];
 
-      insertStats.run(
-        userId,
-        JSON.stringify(defaultSkillAreas),
-        JSON.stringify(defaultAchievements)
-      );
+      await dbManager.run(`
+        INSERT INTO user_stats (user_id, skill_areas, achievements)
+        VALUES (?, ?, ?)
+      `, [userId, JSON.stringify(defaultSkillAreas), JSON.stringify(defaultAchievements)]);
 
     } catch (error) {
       logger.error('Error initializing user stats', { error: error.message, userId });
     }
   }
 
-  getUserByTelegramId(telegramId) {
+  async getUserByTelegramId(telegramId) {
     try {
-      const user = dbManager.prepare(`
+      const user = await dbManager.get(`
         SELECT * FROM users WHERE telegram_id = ? AND is_active = 1
-      `).get(telegramId);
+      `, [telegramId]);
 
       if (user) {
-        this.updateLastActivity(user.id);
+        await this.updateLastActivity(user.id);
       }
 
       return user;
@@ -99,34 +85,34 @@ class UserService {
     }
   }
 
-  getUserById(userId) {
+  async getUserById(userId) {
     try {
-      return dbManager.prepare(`
+      return await dbManager.get(`
         SELECT * FROM users WHERE id = ? AND is_active = 1
-      `).get(userId);
+      `, [userId]);
     } catch (error) {
       logger.error('Error fetching user by ID', { error: error.message, userId });
       return null;
     }
   }
 
-  updateLastActivity(userId) {
+  async updateLastActivity(userId) {
     try {
-      dbManager.prepare(`
+      await dbManager.run(`
         UPDATE users 
         SET last_activity = datetime('now') 
         WHERE id = ?
-      `).run(userId);
+      `, [userId]);
     } catch (error) {
       logger.error('Error updating last activity', { error: error.message, userId });
     }
   }
 
-  getUserNonverbalSetting(userId) {
+  async getUserNonverbalSetting(userId) {
     try {
-      const user = dbManager.prepare(`
+      const user = await dbManager.get(`
         SELECT show_nonverbal FROM users WHERE id = ? AND is_active = 1
-      `).get(userId);
+      `, [userId]);
       
       return user ? Boolean(user.show_nonverbal) : true; // default to true
     } catch (error) {
@@ -135,13 +121,13 @@ class UserService {
     }
   }
 
-  updateNonverbalSetting(userId, showNonverbal) {
+  async updateNonverbalSetting(userId, showNonverbal) {
     try {
-      const result = dbManager.prepare(`
+      const result = await dbManager.run(`
         UPDATE users 
         SET show_nonverbal = ? 
         WHERE id = ?
-      `).run(showNonverbal ? 1 : 0, userId);
+      `, [showNonverbal ? 1 : 0, userId]);
       
       return result.changes > 0;
     } catch (error) {
@@ -150,11 +136,11 @@ class UserService {
     }
   }
 
-  getUserVoiceSetting(userId) {
+  async getUserVoiceSetting(userId) {
     try {
-      const user = dbManager.prepare(`
+      const user = await dbManager.get(`
         SELECT voice_enabled FROM users WHERE id = ? AND is_active = 1
-      `).get(userId);
+      `, [userId]);
       
       return user ? Boolean(user.voice_enabled) : false; // default to false
     } catch (error) {
@@ -163,13 +149,13 @@ class UserService {
     }
   }
 
-  updateVoiceSetting(userId, voiceEnabled) {
+  async updateVoiceSetting(userId, voiceEnabled) {
     try {
-      const result = dbManager.prepare(`
+      const result = await dbManager.run(`
         UPDATE users 
         SET voice_enabled = ? 
         WHERE id = ?
-      `).run(voiceEnabled ? 1 : 0, userId);
+      `, [voiceEnabled ? 1 : 0, userId]);
       
       return result.changes > 0;
     } catch (error) {
@@ -178,12 +164,12 @@ class UserService {
     }
   }
 
-  getUserSettings(userId) {
+  async getUserSettings(userId) {
     try {
-      const user = dbManager.prepare(`
+      const user = await dbManager.get(`
         SELECT show_nonverbal, voice_enabled, language_code 
         FROM users WHERE id = ? AND is_active = 1
-      `).get(userId);
+      `, [userId]);
       
       if (!user) {
         return {
@@ -210,9 +196,9 @@ class UserService {
 
   async getUserStats(userId) {
     try {
-      const stats = dbManager.prepare(`
+      const stats = await dbManager.get(`
         SELECT * FROM user_stats WHERE user_id = ?
-      `).get(userId);
+      `, [userId]);
 
       if (!stats) {
         await this.initializeUserStats(userId);
@@ -268,23 +254,14 @@ class UserService {
       );
 
       // Update database
-      const updateStats = dbManager.prepare(`
+      await dbManager.run(`
         UPDATE user_stats 
         SET total_sessions = ?, completed_sessions = ?, total_session_time_minutes = ?,
             average_session_rating = ?, skill_areas = ?, achievements = ?,
             last_updated = datetime('now')
         WHERE user_id = ?
-      `);
-
-      updateStats.run(
-        newTotalSessions,
-        newCompletedSessions,
-        newTotalTime,
-        newAverageRating,
-        JSON.stringify(updatedSkillAreas),
-        JSON.stringify(updatedAchievements),
-        userId
-      );
+      `, [newTotalSessions, newCompletedSessions, newTotalTime, newAverageRating, 
+         JSON.stringify(updatedSkillAreas), JSON.stringify(updatedAchievements), userId]);
 
       logger.info('User stats updated', { 
         userId, 
@@ -376,9 +353,9 @@ class UserService {
     return achievements;
   }
 
-  getLeaderboard(limit = 10) {
+  async getLeaderboard(limit = 10) {
     try {
-      const leaderboard = dbManager.prepare(`
+      const leaderboard = await dbManager.all(`
         SELECT 
           u.first_name, u.username,
           us.total_sessions, us.completed_sessions, us.average_session_rating,
@@ -388,7 +365,7 @@ class UserService {
         WHERE u.is_active = 1 AND us.completed_sessions > 0
         ORDER BY us.average_session_rating DESC, us.completed_sessions DESC
         LIMIT ?
-      `).all(limit);
+      `, [limit]);
 
       return leaderboard.map((user, index) => ({
         rank: index + 1,
@@ -409,11 +386,11 @@ class UserService {
 
   async deactivateUser(userId) {
     try {
-      const result = dbManager.prepare(`
+      const result = await dbManager.run(`
         UPDATE users 
         SET is_active = 0 
         WHERE id = ?
-      `).run(userId);
+      `, [userId]);
 
       return result.changes > 0;
     } catch (error) {
@@ -422,27 +399,6 @@ class UserService {
     }
   }
 
-  async getUserSettings(userId) {
-    try {
-      const user = dbManager.prepare(`
-        SELECT show_nonverbal, voice_enabled 
-        FROM users 
-        WHERE id = ?
-      `).get(userId);
-
-      if (!user) {
-        return { show_nonverbal: true, voice_enabled: false };
-      }
-
-      return {
-        show_nonverbal: Boolean(user.show_nonverbal),
-        voice_enabled: Boolean(user.voice_enabled)
-      };
-    } catch (error) {
-      logger.error('Error getting user settings', { error: error.message, userId });
-      return { show_nonverbal: true, voice_enabled: false };
-    }
-  }
 
   async updateUserSetting(userId, settingName, value) {
     try {
@@ -451,11 +407,11 @@ class UserService {
         throw new Error(`Invalid setting: ${settingName}`);
       }
 
-      const result = dbManager.prepare(`
+      const result = await dbManager.run(`
         UPDATE users 
         SET ${settingName} = ? 
         WHERE id = ?
-      `).run(value ? 1 : 0, userId);
+      `, [value ? 1 : 0, userId]);
 
       logger.info('User setting updated', { userId, settingName, value });
       return result.changes > 0;
@@ -470,20 +426,6 @@ class UserService {
     }
   }
 
-  getUserNonverbalSetting(userId) {
-    try {
-      const user = dbManager.prepare(`
-        SELECT show_nonverbal 
-        FROM users 
-        WHERE id = ?
-      `).get(userId);
-
-      return user ? Boolean(user.show_nonverbal) : true;
-    } catch (error) {
-      logger.error('Error getting nonverbal setting', { error: error.message, userId });
-      return true; // default to enabled
-    }
-  }
 }
 
 const userService = new UserService();

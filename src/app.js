@@ -11,6 +11,7 @@ class PsychoTrainerBot {
   constructor() {
     this.bot = null;
     this.isRunning = false;
+    this.restartAttempts = 0;
   }
 
   async initialize() {
@@ -260,7 +261,7 @@ class PsychoTrainerBot {
       logger.info('Callback received', { data, telegramUserId, chatId });
       
       // Get user ID from telegram ID
-      const user = userService.getUserByTelegramId(telegramUserId);
+      const user = await userService.getUserByTelegramId(telegramUserId);
       if (!user) {
         logger.error('User not found', { telegramUserId });
         await this.bot.sendMessage(chatId, '❌ Пользователь не найден.');
@@ -276,7 +277,7 @@ class PsychoTrainerBot {
       
       if (data.startsWith('settings_nonverbal_')) {
         const newValue = data.split('_')[2] === 'true';
-        const success = userService.updateNonverbalSetting(userId, newValue);
+        const success = await userService.updateNonverbalSetting(userId, newValue);
         
         if (success) {
           const status = newValue ? 'включена' : 'выключена';
@@ -317,14 +318,25 @@ class PsychoTrainerBot {
         code: error.code
       });
       
+      // Handle 409 Conflict specifically (multiple instances)
+      if (error.code === 'ETELEGRAM' && error.message.includes('409')) {
+        logger.warn('Multiple bot instances detected - stopping this instance');
+        this.gracefulShutdown();
+        return;
+      }
+      
       // Attempt to restart polling if it's a network issue
-      if (error.code === 'EFATAL' || error.code === 'ETELEGRAM') {
+      if (error.code === 'EFATAL' || (error.code === 'ETELEGRAM' && !error.message.includes('409'))) {
+        // Exponential backoff for restart attempts
+        const delay = Math.min(5000 * Math.pow(2, (this.restartAttempts || 0)), 30000);
+        this.restartAttempts = (this.restartAttempts || 0) + 1;
+        
         setTimeout(() => {
           if (this.isRunning) {
-            logger.info('Attempting to restart polling...');
+            logger.info('Attempting to restart polling...', { attempt: this.restartAttempts, delay });
             this.restartPolling();
           }
-        }, 5000);
+        }, delay);
       }
     });
 
@@ -357,12 +369,28 @@ class PsychoTrainerBot {
 
   async restartPolling() {
     try {
-      await this.bot.stopPolling();
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Stop polling gracefully
+      if (this.bot.isPolling()) {
+        await this.bot.stopPolling();
+        logger.info('Polling stopped for restart');
+      }
+      
+      // Wait before restarting
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      
+      // Check if we should still restart
+      if (!this.isRunning) {
+        logger.info('Bot shutdown during restart - aborting restart');
+        return;
+      }
+      
+      // Restart polling
       await this.bot.startPolling();
+      this.restartAttempts = 0; // Reset restart attempts on success
       logger.info('Polling restarted successfully');
     } catch (error) {
       logger.error('Failed to restart polling', { error: error.message });
+      // Don't retry immediately on failure
     }
   }
 
@@ -419,7 +447,7 @@ class PsychoTrainerBot {
       await this.initialize();
       
       // Start polling
-      await this.bot.startPolling();
+      this.bot.startPolling();
       this.isRunning = true;
 
       logger.info('🤖 PsychoTrainer Bot v3.0 started successfully!', {

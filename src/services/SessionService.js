@@ -50,7 +50,7 @@ class SessionService {
 
   async createSession(userId, patientId, options = {}) {
     try {
-      const patient = patientService.getPatientById(patientId);
+      const patient = await patientService.getPatientById(patientId);
       if (!patient) {
         throw new Error('Patient not found');
       }
@@ -62,13 +62,11 @@ class SessionService {
 
       const sessionUuid = randomUUID();
       
-      const insertSession = dbManager.prepare(`
+      const result = await dbManager.run(`
         INSERT INTO sessions (uuid, user_id, patient_id, status, started_at)
         VALUES (?, ?, ?, 'active', datetime('now'))
-      `);
-
-      const result = insertSession.run(sessionUuid, userId, patientId);
-      const sessionId = result.lastInsertRowid;
+      `, [sessionUuid, userId, patientId]);
+      const sessionId = result.lastID;
 
       // Initialize session state
       this.activeSessions.set(sessionUuid, {
@@ -180,18 +178,16 @@ class SessionService {
 
   async saveMessage(sessionId, sender, content, metadata = {}) {
     try {
-      const insertMessage = dbManager.prepare(`
+      await dbManager.run(`
         INSERT INTO messages (session_id, sender, content, tokens_used, response_time_ms)
         VALUES (?, ?, ?, ?, ?)
-      `);
-
-      insertMessage.run(
+      `, [
         sessionId,
         sender,
         content,
         metadata.tokensUsed || 0,
         metadata.responseTime || null
-      );
+      ]);
 
     } catch (error) {
       logger.error('Error saving message', { error: error.message, sessionId });
@@ -209,14 +205,12 @@ class SessionService {
       const duration = Math.round((Date.now() - session.startTime) / 1000 / 60); // minutes
 
       // Update session in database
-      const updateSession = dbManager.prepare(`
+      await dbManager.run(`
         UPDATE sessions 
         SET status = 'completed', ended_at = datetime('now'), 
             duration_minutes = ?, therapist_notes = ?
         WHERE id = ?
-      `);
-
-      updateSession.run(duration, therapistNotes, session.id);
+      `, [duration, therapistNotes, session.id]);
 
       // Clear inactivity monitoring and remove from active sessions
       this.clearInactivityTimer(sessionUuid);
@@ -244,24 +238,24 @@ class SessionService {
   async analyzeSession(sessionId, userId) {
     try {
       // Get session messages
-      const messages = dbManager.prepare(`
+      const messages = await dbManager.all(`
         SELECT sender, content, created_at 
         FROM messages 
         WHERE session_id = ? 
         ORDER BY created_at ASC
-      `).all(sessionId);
+      `, [sessionId]);
 
       if (messages.length === 0) {
         throw new Error('No messages found for this session');
       }
 
       // Get session info
-      const sessionInfo = dbManager.prepare(`
+      const sessionInfo = await dbManager.get(`
         SELECT s.*, p.name as patient_name, p.presenting_problem
         FROM sessions s
         JOIN patients p ON s.patient_id = p.id
         WHERE s.id = ? AND s.user_id = ?
-      `).get(sessionId, userId);
+      `, [sessionId, userId]);
 
       if (!sessionInfo) {
         throw new Error('Session not found or access denied');
@@ -345,13 +339,11 @@ ${this.supervisorPrompt}`;
 
   async saveAnalysis(sessionId, analysisType, analysisData) {
     try {
-      const insertAnalysis = dbManager.prepare(`
+      await dbManager.run(`
         INSERT INTO session_analyses 
         (session_id, analysis_type, content, recommendations, rating, strengths, areas_for_improvement)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-      `);
-
-      insertAnalysis.run(
+      `, [
         sessionId,
         analysisType,
         JSON.stringify(analysisData),
@@ -359,7 +351,7 @@ ${this.supervisorPrompt}`;
         analysisData.overall_rating || null,
         JSON.stringify(analysisData.strengths || []),
         JSON.stringify(analysisData.areas_for_improvement || [])
-      );
+      ]);
 
     } catch (error) {
       logger.error('Error saving analysis', { error: error.message, sessionId });
@@ -376,9 +368,9 @@ ${this.supervisorPrompt}`;
     return null;
   }
 
-  getSessionHistory(userId, limit = 10, offset = 0) {
+  async getSessionHistory(userId, limit = 10, offset = 0) {
     try {
-      const sessions = dbManager.prepare(`
+      const sessions = await dbManager.all(`
         SELECT 
           s.id, s.uuid, s.status, s.started_at, s.ended_at, s.duration_minutes, s.message_count,
           p.name as patient_name, p.presenting_problem,
@@ -389,7 +381,7 @@ ${this.supervisorPrompt}`;
         WHERE s.user_id = ?
         ORDER BY s.started_at DESC
         LIMIT ? OFFSET ?
-      `).all(userId, limit, offset);
+      `, [userId, limit, offset]);
 
       return sessions;
     } catch (error) {
@@ -398,9 +390,9 @@ ${this.supervisorPrompt}`;
     }
   }
 
-  getSessionDetails(sessionId, userId) {
+  async getSessionDetails(sessionId, userId) {
     try {
-      const session = dbManager.prepare(`
+      const session = await dbManager.get(`
         SELECT 
           s.*, 
           p.name as patient_name, p.age, p.gender, p.presenting_problem,
@@ -408,26 +400,26 @@ ${this.supervisorPrompt}`;
         FROM sessions s
         JOIN patients p ON s.patient_id = p.id
         WHERE s.id = ? AND s.user_id = ?
-      `).get(sessionId, userId);
+      `, [sessionId, userId]);
 
       if (!session) {
         return null;
       }
 
-      const messages = dbManager.prepare(`
+      const messages = await dbManager.all(`
         SELECT sender, content, created_at, tokens_used, response_time_ms
         FROM messages 
         WHERE session_id = ? 
         ORDER BY created_at ASC
-      `).all(sessionId);
+      `, [sessionId]);
 
-      const analysis = dbManager.prepare(`
+      const analysis = await dbManager.get(`
         SELECT content, rating, strengths, areas_for_improvement, recommendations, created_at
         FROM session_analyses 
         WHERE session_id = ? AND analysis_type = 'supervisor'
         ORDER BY created_at DESC
         LIMIT 1
-      `).get(sessionId);
+      `, [sessionId]);
 
       return {
         session: {
@@ -588,12 +580,21 @@ ${this.supervisorPrompt}`;
         this.clearInactivityTimer(uuid);
         this.activeSessions.delete(uuid);
         
-        // Mark session as cancelled in database
-        dbManager.prepare(`
-          UPDATE sessions 
-          SET status = 'cancelled', ended_at = datetime('now')
-          WHERE id = ?
-        `).run(session.id);
+        // Mark session as cancelled in database (cleanup is async now)
+        (async () => {
+          try {
+            await dbManager.run(`
+              UPDATE sessions 
+              SET status = 'cancelled', ended_at = datetime('now')
+              WHERE id = ?
+            `, [session.id]);
+          } catch (cleanupError) {
+            logger.error('Error marking session as cancelled during cleanup', {
+              error: cleanupError.message,
+              sessionId: session.id
+            });
+          }
+        })();
       }
     }
   }
@@ -602,10 +603,10 @@ ${this.supervisorPrompt}`;
   async startNewWeekSession(userId, patientId, previousSessionId) {
     try {
       // Load previous session messages for context
-      const previousSession = dbManager.prepare(`
+      const previousSession = await dbManager.get(`
         SELECT uuid FROM sessions 
         WHERE id = ? AND user_id = ?
-      `).get(previousSessionId, userId);
+      `, [previousSessionId, userId]);
 
       if (!previousSession) {
         throw new Error('Previous session not found');
@@ -645,11 +646,11 @@ ${this.supervisorPrompt}`;
   async continueSession(userId, sessionId) {
     try {
       // Load session from database
-      const sessionData = dbManager.prepare(`
+      const sessionData = await dbManager.get(`
         SELECT s.*, p.* FROM sessions s
         JOIN patients p ON s.patient_id = p.id
         WHERE s.id = ? AND s.user_id = ?
-      `).get(sessionId, userId);
+      `, [sessionId, userId]);
 
       if (!sessionData) {
         throw new Error('Session not found or access denied');

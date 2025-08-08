@@ -256,7 +256,7 @@ ${patient.background.substring(0, 250)}...
     const chatId = msg.chat.id;
 
     try {
-      const patients = patientService.getUserPatients(userId, 10);
+      const patients = await patientService.getUserPatients(userId, 10);
 
       if (patients.length === 0) {
         await bot.sendMessage(chatId, 
@@ -296,7 +296,7 @@ ${patient.background.substring(0, 250)}...
     const chatId = msg.chat.id;
 
     try {
-      const sessions = sessionService.getSessionHistory(userId, 10);
+      const sessions = await sessionService.getSessionHistory(userId, 10);
 
       if (sessions.length === 0) {
         await bot.sendMessage(chatId, 
@@ -396,7 +396,7 @@ ${patient.background.substring(0, 250)}...
 
     try {
       // Get last completed session
-      const sessions = sessionService.getSessionHistory(userId, 1);
+      const sessions = await sessionService.getSessionHistory(userId, 1);
       
       if (sessions.length === 0 || sessions[0].status !== 'completed') {
         await bot.sendMessage(chatId, 
@@ -535,7 +535,7 @@ ${patient.background.substring(0, 250)}...
     const chatId = msg.chat.id;
 
     try {
-      const leaderboard = userService.getLeaderboard(10);
+      const leaderboard = await userService.getLeaderboard(10);
 
       if (leaderboard.length === 0) {
         await bot.sendMessage(chatId, 
@@ -597,7 +597,7 @@ ${patient.background.substring(0, 250)}...
     const chatId = msg.chat.id;
 
     try {
-      const settings = userService.getUserSettings(userId);
+      const settings = await userService.getUserSettings(userId);
       
       const nonverbalStatus = settings.show_nonverbal ? '✅ Включена' : '❌ Выключена';
       const voiceStatus = settings.voice_enabled ? '✅ Включено' : '🚧 В разработке';
@@ -667,7 +667,7 @@ ${patient.background.substring(0, 250)}...
       });
       
       // Get patient info from database
-      const patient = patientService.getPatientById(patientId);
+      const patient = await patientService.getPatientById(patientId);
       
       logger.info('Patient lookup result', {
         patientId,
@@ -703,11 +703,15 @@ ${patient.background.substring(0, 250)}...
 👤 *Пациент заходит...*
       `;
 
-      await bot.editMessageText(secretaryResponseMessage, {
-        chat_id: chatId,
-        message_id: callbackQuery.message.message_id,
-        parse_mode: 'Markdown'
-      });
+      // Only edit message if content is different
+      const currentMessage = callbackQuery.message.text;
+      if (currentMessage !== secretaryResponseMessage.trim()) {
+        await bot.editMessageText(secretaryResponseMessage, {
+          chat_id: chatId,
+          message_id: callbackQuery.message.message_id,
+          parse_mode: 'Markdown'
+        });
+      }
 
       // End any existing active session
       const existingSession = sessionService.getActiveSession(userId);

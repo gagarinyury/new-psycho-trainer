@@ -321,23 +321,15 @@ ${sessionContext}`;
         created_at: new Date().toISOString()
       };
       
-      dbManager.prepare(`
+      await dbManager.run(`
         INSERT INTO conversation_history 
         (session_id, messages, response_content, model_used, tokens_input, tokens_output, 
          cache_read_tokens, cache_creation_tokens, response_time, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        conversationData.session_id,
-        conversationData.messages,
-        conversationData.response_content,
-        conversationData.model_used,
-        conversationData.tokens_input,
-        conversationData.tokens_output,
-        conversationData.cache_read_tokens,
-        conversationData.cache_creation_tokens,
-        conversationData.response_time,
-        conversationData.created_at
-      );
+      `, [conversationData.session_id, conversationData.messages, conversationData.response_content,
+         conversationData.model_used, conversationData.tokens_input, conversationData.tokens_output,
+         conversationData.cache_read_tokens, conversationData.cache_creation_tokens, 
+         conversationData.response_time, conversationData.created_at]);
       
       logger.info('Conversation saved to database', { 
         sessionId, 
@@ -356,13 +348,13 @@ ${sessionContext}`;
   // Load conversation history from database
   async loadConversationFromDB(sessionId, limit = 50) {
     try {
-      const conversations = dbManager.prepare(`
+      const conversations = await dbManager.all(`
         SELECT messages, response_content, created_at
         FROM conversation_history 
         WHERE session_id = ?
         ORDER BY created_at DESC
         LIMIT ?
-      `).all(sessionId, limit);
+      `, [sessionId, limit]);
       
       const fullHistory = [];
       conversations.reverse().forEach(conv => {
@@ -520,7 +512,7 @@ ${sessionContext}`;
       }
 
       // Record performance metrics
-      this.recordMetrics(response, responseTime);
+      await this.recordMetrics(response, responseTime);
 
       return {
         content: response.content?.[0]?.text || '',
@@ -560,7 +552,7 @@ ${sessionContext}`;
   }
 
   // Record performance metrics
-  recordMetrics(response, responseTime) {
+  async recordMetrics(response, responseTime) {
     try {
       const metrics = [
         { name: 'claude_api_response_time', value: responseTime, unit: 'ms' },
@@ -572,27 +564,22 @@ ${sessionContext}`;
         { name: 'claude_cache_hits', value: (response.usage?.cache_read_input_tokens || 0) > 0 ? 1 : 0, unit: 'count' }
       ];
 
-      const insertMetric = dbManager.prepare(`
-        INSERT INTO performance_metrics (metric_name, metric_value, metric_unit, recorded_at)
-        VALUES (?, ?, ?, datetime('now'))
-      `);
-
-      const transaction = dbManager.transaction(() => {
-        metrics.forEach(metric => {
-          insertMetric.run(metric.name, metric.value, metric.unit);
-        });
-      });
-
-      transaction();
+      // Insert metrics one by one since we don't have transaction support yet
+      for (const metric of metrics) {
+        await dbManager.run(`
+          INSERT INTO performance_metrics (metric_name, metric_value, metric_unit, recorded_at)
+          VALUES (?, ?, ?, datetime('now'))
+        `, [metric.name, metric.value, metric.unit]);
+      }
     } catch (error) {
       logger.error('Error recording metrics', { error: error.message });
     }
   }
 
   // Get cache statistics
-  getCacheStats() {
+  async getCacheStats() {
     try {
-      const stats = dbManager.prepare(`
+      const stats = await dbManager.all(`
         SELECT 
           cache_type,
           COUNT(*) as total_entries,
@@ -601,16 +588,16 @@ ${sessionContext}`;
           COUNT(CASE WHEN expires_at > datetime('now') THEN 1 END) as active_entries
         FROM claude_cache
         GROUP BY cache_type
-      `).all();
+      `);
 
-      const totalStats = dbManager.prepare(`
+      const totalStats = await dbManager.get(`
         SELECT 
           COUNT(*) as total_cache_entries,
           SUM(hit_count) as total_cache_hits,
           SUM(tokens_input + tokens_output) as total_tokens_saved
         FROM claude_cache
         WHERE expires_at > datetime('now')
-      `).get();
+      `);
 
       return {
         byType: stats,
@@ -742,10 +729,10 @@ ${sessionContext}`;
   }
 
   // Get cache preload recommendations based on usage patterns
-  getCachePreloadRecommendations() {
+  async getCachePreloadRecommendations() {
     try {
       // Get most frequently used system prompts
-      const frequentPrompts = dbManager.prepare(`
+      const frequentPrompts = await dbManager.all(`
         SELECT prompt_hash, COUNT(*) as usage_count
         FROM claude_cache 
         WHERE cache_type IN ('conversation', 'analysis')
@@ -753,17 +740,17 @@ ${sessionContext}`;
         GROUP BY prompt_hash
         ORDER BY usage_count DESC
         LIMIT 10
-      `).all();
+      `);
 
       // Get most common interaction patterns
-      const commonPatterns = dbManager.prepare(`
+      const commonPatterns = await dbManager.all(`
         SELECT cache_key, response_content, hit_count
         FROM claude_cache 
         WHERE cache_type = 'conversation'
         AND hit_count > 1
         ORDER BY hit_count DESC
         LIMIT 20
-      `).all();
+      `);
 
       return {
         frequentPrompts,

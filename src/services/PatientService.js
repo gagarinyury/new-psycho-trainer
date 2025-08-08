@@ -112,7 +112,7 @@ ${randomElements.join('. ')}
       this.validatePatientData(patientData);
 
       // Generate system prompt for this patient
-      const systemPrompt = this.generateSystemPrompt(patientData, userId);
+      const systemPrompt = await this.generateSystemPrompt(patientData, userId);
 
       // Save to database
       const patientUuid = randomUUID();
@@ -149,8 +149,8 @@ ${randomElements.join('. ')}
     }
   }
 
-  generateSystemPrompt(patientData, userId) {
-    const showNonverbal = userService.getUserNonverbalSetting(userId);
+  async generateSystemPrompt(patientData, userId) {
+    const showNonverbal = await userService.getUserNonverbalSetting(userId);
     
     const nonverbalRules = showNonverbal ? `
 11. Иногда добавляй краткие невербальные действия в формате *действие*
@@ -208,29 +208,19 @@ ${JSON.stringify(patientData.therapy_goals, null, 2)}
 
   async savePatient(uuid, userId, patientData, systemPrompt) {
     try {
-      const insertPatient = dbManager.prepare(`
+      const result = await dbManager.run(`
         INSERT INTO patients 
         (uuid, created_by, name, age, gender, background, personality_traits, 
          psychological_profile, presenting_problem, therapy_goals, system_prompt)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-
-      const result = insertPatient.run(
-        uuid,
-        userId,
-        patientData.name,
-        patientData.age,
-        patientData.gender,
-        patientData.background,
-        JSON.stringify(patientData.personality_traits),
-        JSON.stringify(patientData.psychological_profile),
-        patientData.psychological_profile.presenting_problem,
-        JSON.stringify(patientData.therapy_goals),
-        systemPrompt
-      );
+      `, [uuid, userId, patientData.name, patientData.age, patientData.gender,
+         patientData.background, JSON.stringify(patientData.personality_traits),
+         JSON.stringify(patientData.psychological_profile),
+         patientData.psychological_profile.presenting_problem,
+         JSON.stringify(patientData.therapy_goals), systemPrompt]);
 
       // Fetch the complete patient record
-      const patient = this.getPatientById(result.lastInsertRowid);
+      const patient = await this.getPatientById(result.lastID);
       return patient;
 
     } catch (error) {
@@ -239,11 +229,11 @@ ${JSON.stringify(patientData.therapy_goals, null, 2)}
     }
   }
 
-  getPatientById(patientId) {
+  async getPatientById(patientId) {
     try {
-      const patient = dbManager.prepare(`
+      const patient = await dbManager.get(`
         SELECT * FROM patients WHERE id = ? AND is_active = 1
-      `).get(patientId);
+      `, [patientId]);
 
       if (!patient) {
         return null;
@@ -262,11 +252,11 @@ ${JSON.stringify(patientData.therapy_goals, null, 2)}
     }
   }
 
-  getPatientByUuid(uuid) {
+  async getPatientByUuid(uuid) {
     try {
-      const patient = dbManager.prepare(`
+      const patient = await dbManager.get(`
         SELECT * FROM patients WHERE uuid = ? AND is_active = 1
-      `).get(uuid);
+      `, [uuid]);
 
       if (!patient) {
         return null;
@@ -284,9 +274,9 @@ ${JSON.stringify(patientData.therapy_goals, null, 2)}
     }
   }
 
-  getUserPatients(userId, limit = 20, offset = 0) {
+  async getUserPatients(userId, limit = 20, offset = 0) {
     try {
-      const patients = dbManager.prepare(`
+      const patients = await dbManager.all(`
         SELECT 
           id, uuid, name, age, gender, presenting_problem, 
           created_at, 
@@ -295,7 +285,7 @@ ${JSON.stringify(patientData.therapy_goals, null, 2)}
         WHERE created_by = ? AND is_active = 1
         ORDER BY created_at DESC
         LIMIT ? OFFSET ?
-      `).all(userId, limit, offset);
+      `, [userId, limit, offset]);
 
       return patients;
     } catch (error) {
@@ -306,11 +296,11 @@ ${JSON.stringify(patientData.therapy_goals, null, 2)}
 
   async deactivatePatient(patientId, userId) {
     try {
-      const result = dbManager.prepare(`
+      const result = await dbManager.run(`
         UPDATE patients 
         SET is_active = 0 
         WHERE id = ? AND created_by = ?
-      `).run(patientId, userId);
+      `, [patientId, userId]);
 
       return result.changes > 0;
     } catch (error) {
@@ -319,9 +309,9 @@ ${JSON.stringify(patientData.therapy_goals, null, 2)}
     }
   }
 
-  getPatientStats(patientId) {
+  async getPatientStats(patientId) {
     try {
-      const stats = dbManager.prepare(`
+      const stats = await dbManager.get(`
         SELECT 
           COUNT(*) as total_sessions,
           SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_sessions,
@@ -330,7 +320,7 @@ ${JSON.stringify(patientData.therapy_goals, null, 2)}
           MAX(started_at) as last_session
         FROM sessions 
         WHERE patient_id = ?
-      `).get(patientId);
+      `, [patientId]);
 
       return stats;
     } catch (error) {
